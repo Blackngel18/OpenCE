@@ -295,7 +295,66 @@ static unsigned short msvc_to_control_word(unsigned int value, unsigned short wo
 	return word;
 }
 
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) && defined(__x86_64__)
+/* x86-64 guest (the macOS port): the game's arithmetic is SSE, whose
+rounding mode and sticky exception flags live in MXCSR. Precision control
+has no equivalent; the rest of the MSVC control word is only remembered. */
+static unsigned int msvc_control_word = CW_DEFAULT;
+
+static unsigned int mxcsr_read(void)
+{
+	unsigned int value;
+
+	__asm__ volatile ("stmxcsr %0" : "=m" (value));
+	return value;
+}
+
+static void mxcsr_write(unsigned int value)
+{
+	__asm__ volatile ("ldmxcsr %0" : : "m" (value));
+}
+
+unsigned int _control87(unsigned int new_value, unsigned int mask)
+{
+	unsigned int mxcsr;
+
+	if (mask)
+	{
+		msvc_control_word = (msvc_control_word & ~mask) | (new_value & mask);
+		mxcsr = mxcsr_read() & ~(3u << 13);
+		switch (msvc_control_word & _MCW_RC)
+		{
+		case _RC_DOWN: mxcsr |= 1u << 13; break;
+		case _RC_UP: mxcsr |= 2u << 13; break;
+		case _RC_CHOP: mxcsr |= 3u << 13; break;
+		default: break;
+		}
+		mxcsr_write(mxcsr);
+	}
+	return msvc_control_word;
+}
+
+unsigned int _controlfp(unsigned int new_value, unsigned int mask)
+{
+	/* _controlfp ignores the denormal mask */
+	return _control87(new_value, mask & ~_EM_DENORMAL);
+}
+
+unsigned int _statusfp(void)
+{
+	/* MXCSR's low six bits are in the x87 status word's order: invalid,
+	denormal, zero divide, overflow, underflow, precision */
+	return mxcsr_read() & 0x3f;
+}
+
+unsigned int _clearfp(void)
+{
+	unsigned int status = _statusfp();
+
+	mxcsr_write(mxcsr_read() & ~0x3fu);
+	return status;
+}
+#elif defined(HALO_ANDROID)
 /* AArch64: the rounding mode lives in FPCR.RMode, the sticky exception
 flags in FPSR. Precision control and exception unmasking have no
 equivalent; the rest of the MSVC control word is only remembered. */
